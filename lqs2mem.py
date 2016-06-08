@@ -141,9 +141,9 @@ SEEK_END = 2
 # Verbosity level
 VERBOSE = 0
 
-# Write-to-disk flag and number of pages written to disk
-DO_WRITE = False
+# Number of pages written to disk and ram block name
 PAGE_COUNT = 0
+RAM_NAME = None
 
 
 # -----------------------------------------------------------------------------
@@ -230,14 +230,32 @@ def write_page(fho, addr, data):
     PAGE_COUNT += 1
 
 
+def ram_block_from_stream(fhi, flags):
+    '''
+    Get the 'ram' block name from file
+    Based on 'ram_block_from_stream' from QEMU migration/ram.c
+    '''
+    global RAM_NAME
+
+    if flags & RAM_SAVE_FLAG_CONTINUE:
+        if RAM_NAME is None:
+            print('Bad migration stream')
+            return None
+    else:
+        ram_name_len = qemu_get_byte(fhi)
+        RAM_NAME = fhi.read(ram_name_len)
+
+        dprint(2, '    ram name: %s' % RAM_NAME)
+
+    return RAM_NAME
+
+
 def process_section_ram(fhi, fho, sec_version, dump_name):
     '''
     Process a 'ram' section
 
     Loosly based on 'ram_load' from QEMU migration/ram.c
     '''
-    global DO_WRITE
-
     if sec_version != 4:
         print('Unsupported \'ram\' section version: %d' % sec_version)
         return 1
@@ -252,64 +270,65 @@ def process_section_ram(fhi, fho, sec_version, dump_name):
         dprint(3, '    addr:      %x' % addr)
         dprint(3, '    flags:     %x' % flags)
 
-        if flags & RAM_SAVE_FLAG_MEM_SIZE:
+        if flags & (RAM_SAVE_FLAG_COMPRESS | RAM_SAVE_FLAG_PAGE |
+                    RAM_SAVE_FLAG_COMPRESS_PAGE | RAM_SAVE_FLAG_XBZRLE):
+            ram_name = ram_block_from_stream(fhi, flags)
+            if ram_name is None:
+                return 1
+
+        ram_flags = flags & ~RAM_SAVE_FLAG_CONTINUE
+
+        if ram_flags == RAM_SAVE_FLAG_MEM_SIZE:
             total_ram = addr
             dprint(2, '    total ram: %d (%d MB)' % (addr, addr / (1 << 20)))
 
             dump_ram_exists = False
-            while total_ram > 0:
-                ram_name_len = qemu_get_byte(fhi)
-                ram_name = fhi.read(ram_name_len)
+            while total_ram:
+                block_name_len = qemu_get_byte(fhi)
+                block_name = fhi.read(block_name_len)
+                block_len = qemu_get_be64(fhi)
 
-                ram_len = qemu_get_be64(fhi)
-                kb = ram_len >> 10 if (ram_len >> 10) > 0 else 0
-                mb = ram_len >> 20 if (ram_len >> 20) > 0 else 0
+                kb = block_len >> 10 if (block_len >> 10) > 0 else 0
+                mb = block_len >> 20 if (block_len >> 20) > 0 else 0
 
                 print('section = %-32s size = %5d [%s] %12d [bytes]' %
-                      (ram_name,
-                       mb if mb > 0 else kb if kb > 0 else ram_len,
+                      (block_name,
+                       mb if mb > 0 else kb if kb > 0 else block_len,
                        "MB" if mb > 0 else "KB" if kb > 0 else "bytes",
-                       ram_len))
+                       block_len))
 
-                if dump_name is not None and ram_name == dump_name:
+                if dump_name is not None and block_name == dump_name:
                     dump_ram_exists = True
 
-                total_ram -= ram_len
+                total_ram -= block_len
 
             if dump_name is not None and not dump_ram_exists:
                 print('Section not found: %s' % dump_name)
                 return 1
 
-        if flags & RAM_SAVE_FLAG_COMPRESS or \
-           flags & RAM_SAVE_FLAG_PAGE:
+        elif ram_flags == RAM_SAVE_FLAG_COMPRESS:
+            fill_byte = qemu_get_byte(fhi)
 
-            if not flags & RAM_SAVE_FLAG_CONTINUE:
-                ram_name_len = qemu_get_byte(fhi)
-                ram_name = fhi.read(ram_name_len)
+            dprint(3, '    fill byte: %02x' % fill_byte)
 
-                dprint(2, '    ram name: %s' % ram_name)
+            if ram_name == dump_name:
+                write_page(fho, addr, fill_byte)
 
-                DO_WRITE = bool(ram_name == dump_name)
+        elif ram_flags == RAM_SAVE_FLAG_PAGE:
+            page = fhi.read(PAGE_SIZE)
 
-            if flags & RAM_SAVE_FLAG_COMPRESS:
-                fill_byte = qemu_get_byte(fhi)
+            dprint(3, '    page data: ' +
+                   ' '.join('%02x' % ord(x) for x in page[0:16]) + ' ...')
 
-                dprint(3, '    fill byte: %02x' % fill_byte)
+            if ram_name == dump_name:
+                write_page(fho, addr, page)
 
-                if DO_WRITE:
-                    write_page(fho, addr, fill_byte)
-
-            if flags & RAM_SAVE_FLAG_PAGE:
-                page = fhi.read(PAGE_SIZE)
-
-                dprint(3, '    page data: ' +
-                       ' '.join('%02x' % ord(x) for x in page[0:16]) + ' ...')
-
-                if DO_WRITE:
-                    write_page(fho, addr, page)
-
-        if flags & RAM_SAVE_FLAG_EOS:
+        elif ram_flags == RAM_SAVE_FLAG_EOS:
             return 0
+
+        else:
+            print('Invalid or unsupported \'ram\' flags: %x' % flags)
+            return 1
 
 
 # def process_section_block(fhi, fho, sec_version, dump_name):
