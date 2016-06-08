@@ -30,6 +30,16 @@ import argparse
 import struct
 import sys
 
+# -----------------------------------------------------------------------------
+# Libvirt defines and structs (v1.3.4)
+#
+# libvirt's QEMU save file format is:
+#   - Header (virQEMUSaveHeader)
+#   - Domain XML config data
+#   - QEMU savevm data
+
+# From src/qemu/qemu_driver.c
+
 QEMU_SAVE_MAGIC   = "LibvirtQemudSave"
 QEMU_SAVE_PARTIAL = "LibvirtQemudPart"
 QEMU_SAVE_VERSION = 2
@@ -42,6 +52,17 @@ QEMU_SAVE_VERSION = 2
 #     uint32_t compressed;
 #     uint32_t unused[15];
 # };
+
+# -----------------------------------------------------------------------------
+# QEMU defines and structs (v2.6.0)
+#
+# The conversion of a QEMU savevm file into a raw physical memory image is
+# based on function qemu_loadvm_state in migartion/savevm.c. Each section has
+# a different handler function and save/load functions are scattered throughout
+# the QEMU code base. Comments in our section handler functions reference the
+# corresponding QEMU savevm/vmstate load functions.
+
+# From include/migration/migration.h
 
 QEMU_VM_FILE_MAGIC          = 0x5145564d
 QEMU_VM_FILE_VERSION_COMPAT = 0x00000002
@@ -69,6 +90,8 @@ SEC_TYPE_NAME = (
     'COMMAND',
 )
 
+# From migration/ram.c
+
 RAM_SAVE_FLAG_FULL     = 0x01  # Obsolete, not used anymore
 RAM_SAVE_FLAG_COMPRESS = 0x02
 RAM_SAVE_FLAG_MEM_SIZE = 0x04
@@ -80,7 +103,6 @@ RAM_SAVE_FLAG_XBZRLE   = 0x40
 RAM_SAVE_FLAG_COMPRESS_PAGE = 0x100
 
 
-# -----------------------------------------------------------------------------
 # From migration/qemu-file.c
 
 def qemu_get_byte(fhi):
@@ -211,6 +233,8 @@ def write_page(fho, addr, data):
 def process_section_ram(fhi, fho, sec_version, dump_name):
     '''
     Process a 'ram' section
+
+    Loosly based on 'ram_load' from QEMU migration/ram.c
     '''
     global DO_WRITE
 
